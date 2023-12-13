@@ -14,14 +14,17 @@ import (
 )
 
 func main() {
-	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 3000*time.Second)
+	// ctx := context.Background()
 
 	// connect to relay
-	url := "wss://nostr.zebedee.cloud"
+	url := "wss://relay.nostrassets.com"
 	relay, err := nostr.RelayConnect(ctx, url)
 	if err != nil {
 		panic(err)
 	}
+
+	fmt.Printf("relay: %+v\n", relay.IsConnected())
 
 	reader := os.Stdin
 	var npub string
@@ -41,7 +44,7 @@ func main() {
 		// this filters for messages tagged with the user, mainly replies.
 		t["p"] = []string{v.(string)}
 		filters = []nostr.Filter{{
-			Kinds: []int{nostr.KindTextNote},
+			Kinds: []int{nostr.KindEncryptedDirectMessage, nostr.KindTextNote},
 			Tags:  t,
 			// limit = 3, get the three most recent notes
 			Limit: 3,
@@ -50,9 +53,15 @@ func main() {
 		panic("not a valid npub!")
 	}
 
+	fmt.Println("filters: ", filters)
+
 	// create a subscription and submit to relay
 	// results will be returned on the sub.Events channel
-	sub, _ := relay.Subscribe(ctx, filters)
+	sub, err := relay.Subscribe(ctx, filters)
+	if err != nil {
+		fmt.Println("subscribe err: ", err)
+		return
+	}
 
 	// we will append the returned events to this slice
 	evs := make([]nostr.Event, 0)
@@ -60,6 +69,7 @@ func main() {
 	go func() {
 		<-sub.EndOfStoredEvents
 		cancel()
+		fmt.Println("end event")
 	}()
 	for ev := range sub.Events {
 		evs = append(evs, *ev)
@@ -102,7 +112,7 @@ func main() {
 	}
 
 	ev.CreatedAt = nostr.Now()
-	ev.Kind = nostr.KindTextNote
+	ev.Kind = nostr.KindEncryptedDirectMessage
 	var content string
 	fmt.Fprintln(os.Stderr, "enter content of note, ending with an empty newline (ctrl+d):")
 	for {
@@ -116,14 +126,27 @@ func main() {
 	}
 	ev.Content = strings.TrimSpace(content)
 	ev.Sign(sk)
-	for _, url := range []string{"wss://nostr.zebedee.cloud"} {
+
+	for _, url := range []string{"wss://relay.nostrassets.com", "wss://relay.primal.net", "wss://relay.damus.io", "wss://nos.lol"} {
 		ctx := context.WithValue(context.Background(), "url", url)
 		relay, e := nostr.RelayConnect(ctx, url)
 		if e != nil {
 			fmt.Println(e)
 			continue
 		}
+
 		fmt.Println("posting to: ", url)
-		relay.Publish(ctx, ev)
+		err = relay.Publish(ctx, ev)
+		if err != nil {
+			fmt.Println("Publish err", err.Error())
+			continue
+		}
+
+		evts, err := relay.QuerySync(ctx, filters[len(filters)-1], nil)
+		if err != nil {
+			fmt.Println("QuerySync err", err.Error())
+			continue
+		}
+		fmt.Println("listen to events: ", url, evts)
 	}
 }
